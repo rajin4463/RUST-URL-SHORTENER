@@ -3,6 +3,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use sqlx::PgPool;
+
 use crate::utils::internal_error;
 
 const DEAFIAULT_CACHE_CONTROL_HEADER_VALUE: &str = 
@@ -21,26 +22,28 @@ pub async fn health() -> impl IntoResponse {
 
 pub async fn redirect(
     State(pool): State<PgPool>,
-    Path(request_link): Path<String>,
+    Path(requested_link): Path<String>,
 ) -> Result<Response, (StatusCode, String)> {
     let select_timeout = tokio::time::Duration::from_millis(300);
 
-    let link = tokio::time::timeout(select_timeout, sqlx::query_as!(
-        Link,
-        "select id, target_url from links where id = $1",
-        request_link
+    let link = tokio::time::timeout(
+        select_timeout,
+        sqlx::query_as!(
+            Link,
+            "select id, target_url from links where id = $1",
+            requested_link
+        )
+            .fetch_optional(&pool),
     )
-    .fetch_optional(&pool)
-    )
-    .await
-    .map_err(internal_error)?
-    .map_err(internal_error)?
-    .ok_or_else(|| "Not Found".to_string())
-    .map_err(|err| (StatusCode::NOT_FOUND, err))?;
+        .await
+        .map_err(internal_error)?
+        .map_err(internal_error)?
+        .ok_or_else(|| "Not found".to_string())
+        .map_err(|err| (StatusCode::NOT_FOUND, err))?;
 
     tracing::debug!(
         "Redirecting link id {} to {}",
-        request_link,
+        requested_link,
         link.target_url
     );
 
