@@ -5,7 +5,6 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::engine::general_purpose;
 use base64::Engine;
-use url::form_urlencoded::parse;
 use url::Url;
 use rand::Rng;
 use sqlx::PgPool;
