@@ -6,7 +6,7 @@ use sqlx::postgres::PgPoolOptions;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use crate::routes::{health, redirect, create_link, update_link};
+use crate::routes::{health, redirect, create_link, update_link, get_link_statistics};
 
 mod routes;
 mod utils;
@@ -35,6 +35,7 @@ async fn main() -> Result <(), Box<dyn Error>>{
 
     let app = Router::new()
         .route("/create", post(create_link))
+        .route("/:id/statistics", get(get_link_statistics))
         .route("/:id", patch(update_link).get(redirect))
         .route("/metrics", get(|| async move { metric_handle.render() }))
         .route("/health", get(health))

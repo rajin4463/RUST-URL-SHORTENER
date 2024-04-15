@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::engine::general_purpose;
@@ -31,6 +31,14 @@ pub struct LinkTarget {
     pub target_url: String,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CountedLinkStatistic {
+    pub amount: Option<i64>,
+    pub referer: Option<String>,
+    pub user_agent: Option<String>,
+}
+
 fn generate_id() -> String {
     let random_number = rand::thread_rng().gen_range(0..u32::MAX);
     general_purpose::URL_SAFE_NO_PAD.encode(random_number.to_string())
@@ -39,6 +47,7 @@ fn generate_id() -> String {
 pub async fn redirect(
     State(pool): State<PgPool>,
     Path(requested_link): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Response, (StatusCode, String)> {
     let select_timeout = tokio::time::Duration::from_millis(300);
 
@@ -62,6 +71,40 @@ pub async fn redirect(
         requested_link,
         link.target_url
     );
+
+    let reference_header = headers
+        .get("referer")
+        .map(|value| value.to_str().unwrap_or_default().to_string());
+
+    let user_agent = headers
+        .get("user-agent")
+        .map(|value| value.to_str().unwrap_or_default().to_string());
+
+    let insert_statistic_timeout = tokio::time::Duration::from_millis(300);
+
+    let saved_statistic = tokio::time::timeout(
+        insert_statistic_timeout, 
+        sqlx::query(r#"
+                insert into link_statistic(link_id, referer, user_agent)
+                values($1, $2, $3)
+                "#,
+            )
+            .bind(&requested_link)
+            .bind(&reference_header)
+            .bind(&user_agent)
+            .execute(&pool),
+    )
+    .await;
+
+    match saved_statistic {
+        Err(elapsed) => tracing::error!("Saving new link click resulted in timeout: {}", elapsed),
+        Ok(Err(err)) => tracing::error!("Failed to save new link click: {}", err),
+        _ => tracing::debug!("Saved new link click for link with id {}, reference {}, and user_agent {}", 
+        requested_link,
+        reference_header.unwrap_or_default(),
+        user_agent.unwrap_or_default()
+        ),
+    };
 
     Ok(Response::builder()
         .status(StatusCode::TEMPORARY_REDIRECT)
@@ -144,4 +187,30 @@ pub async fn update_link(
     tracing::debug!("Updated link with id {}, now targetting {}", link_id, url);
 
     Ok(Json(link))
+}
+
+pub async fn get_link_statistics(
+    State(pool): State<PgPool>,
+    Path(link_id): Path<String>,
+) -> Result<Json<Vec<CountedLinkStatistic>>, (StatusCode, String)> {
+    let fetch_statistics_timeout = tokio::time::Duration::from_millis(300);
+
+    let statistics = tokio::time::timeout(
+        fetch_statistics_timeout,
+        sqlx::query_as!(
+            CountedLinkStatistic,
+            r#"
+            select count(*) as amount, referer, user_agent from link_statistics group by link_id, referer, user_agent having link_id = $1
+            "#,
+            &link_id
+        )
+        .fetch_all(&pool)
+    )
+    .await
+    .map_err(internal_error)?
+    .map_err(internal_error)?;
+
+    tracing::debug!("Statistics for link with id {} requested", link_id);
+
+    Ok(Json(statistics))
 }
